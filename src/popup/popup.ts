@@ -297,6 +297,52 @@ function deselectAll() {
   updateUI();
 }
 
+// リトライ機構付き削除関数
+async function deleteWithRetry(
+  id: string, 
+  type: 'chat' | 'memory', 
+  maxRetries: number = 3
+): Promise<{ success: boolean; error?: string }> {
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    try {
+      // 削除API呼び出し
+      if (type === 'chat') {
+        await apiClient.deleteConversation(id);
+      } else {
+        await apiClient.deleteMemory(id);
+      }
+      
+      if (attempt > 1) {
+        console.log(`✅ ${id} 削除成功（${attempt}回目の試行）`);
+      }
+      
+      return { success: true };
+      
+    } catch (error) {
+      const errorMsg = (error as Error).message;
+      
+      // 404エラーは既に削除済み = 成功とみなす
+      if (errorMsg.includes('404') || errorMsg.includes('Not Found')) {
+        console.log(`ℹ️ ${id} は既に削除済み`);
+        return { success: true };
+      }
+      
+      // 最後の試行で失敗
+      if (attempt === maxRetries) {
+        console.error(`❌ ${id} の削除に失敗（${maxRetries}回試行）:`, errorMsg);
+        return { success: false, error: errorMsg };
+      }
+      
+      // リトライ前に待機（指数バックオフ: 2秒、4秒、8秒）
+      const delayMs = Math.pow(2, attempt) * 1000;
+      console.log(`⏳ リトライ ${attempt + 1}回目（${delayMs}ms後）...`);
+      await new Promise(r => setTimeout(r, delayMs));
+    }
+  }
+  
+  return { success: false, error: 'Unknown error' };
+}
+
 // 削除処理
 async function handleDelete() {
   if (selectedIds.size === 0) return;
@@ -337,12 +383,27 @@ async function handleDelete() {
   const idsToDelete = Array.from(selectedIds);
   const errors: { id: string; error: string }[] = [];
 
-  // バッチ並列削除（5件ずつ同時削除）
+  // バッチ並列削除（5件ずつ同時削除、リトライ付き）
   const batchSize = 5;
   let processedCount = 0;
+  let tokenRefreshCounter = 0;
 
   for (let i = 0; i < idsToDelete.length; i += batchSize) {
     const batch = idsToDelete.slice(i, i + batchSize);
+    
+    // 10件ごとにトークンを再取得
+    tokenRefreshCounter += batch.length;
+    if (tokenRefreshCounter >= 10) {
+      console.log('🔄 トークンを再取得中...');
+      try {
+        await apiClient.clearTokenCache();
+        tokenRefreshCounter = 0;
+        // トークン再取得後に短い待機
+        await new Promise(r => setTimeout(r, 200));
+      } catch (error) {
+        console.warn('⚠️ Failed to refresh token:', error);
+      }
+    }
     
     // バッチ内のアイテムに削除中スタイルを適用
     batch.forEach((id) => {
@@ -352,21 +413,9 @@ async function handleDelete() {
       }
     });
 
-    // 並列削除
+    // 並列削除（リトライ機構付き）
     const results = await Promise.allSettled(
-      batch.map(async (id) => {
-        try {
-          // 削除API呼び出し
-          if (state.activeTab === 'chat') {
-            await apiClient.deleteConversation(id);
-          } else {
-            await apiClient.deleteMemory(id);
-          }
-          return { success: true, id };
-        } catch (error) {
-          return { success: false, id, error: (error as Error).message };
-        }
-      })
+      batch.map(id => deleteWithRetry(id, state.activeTab))
     );
 
     // 結果を処理
@@ -374,7 +423,12 @@ async function handleDelete() {
       const id = batch[index];
       processedCount++;
 
-      if (result.status === 'fulfilled' && result.value.success) {
+      // deleteWithRetry の戻り値を処理
+      const deleteResult = result.status === 'fulfilled' 
+        ? result.value 
+        : { success: false, error: (result.reason as Error).message };
+
+      if (deleteResult.success) {
         // 成功したらリストから削除
         if (state.activeTab === 'chat') {
           state.conversations = state.conversations.filter((c) => c.id !== id);
@@ -390,12 +444,9 @@ async function handleDelete() {
           itemElement.remove();
         }
       } else {
-        // 失敗
-        const errorMsg = result.status === 'fulfilled' 
-          ? result.value.error 
-          : (result.reason as Error).message;
-        console.error(`Failed to delete ${id}:`, errorMsg);
-        errors.push({ id, error: errorMsg || 'Unknown error' });
+        // 失敗（3回リトライしても失敗）
+        console.error(`Failed to delete ${id} after retries:`, deleteResult.error);
+        errors.push({ id, error: deleteResult.error || 'Unknown error' });
 
         // 失敗時もselectedIdsから削除（状態の不整合を防ぐ）
         selectedIds.delete(id);
