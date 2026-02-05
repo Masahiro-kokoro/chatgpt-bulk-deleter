@@ -2,6 +2,34 @@ import type { ConversationsResponse, MemoriesResponse } from './types';
 
 class ChatGPTApiClient {
   /**
+   * リトライ機能付きでContent Scriptにメッセージを送信
+   */
+  private async sendMessageWithRetry(message: any, maxRetries: number = 3): Promise<any> {
+    let lastError: Error | null = null;
+
+    for (let attempt = 1; attempt <= maxRetries; attempt++) {
+      try {
+        console.log(`📡 Attempt ${attempt}/${maxRetries}:`, message.action);
+        return await this.sendMessage(message);
+      } catch (error) {
+        lastError = error as Error;
+        console.warn(`⚠️ Attempt ${attempt} failed:`, lastError.message);
+
+        // 最後の試行でなければ待機してリトライ
+        if (attempt < maxRetries) {
+          const delayMs = Math.pow(2, attempt - 1) * 1000; // 1秒、2秒、4秒
+          console.log(`⏳ Retrying in ${delayMs}ms...`);
+          await new Promise(resolve => setTimeout(resolve, delayMs));
+        }
+      }
+    }
+
+    // すべてのリトライが失敗
+    console.error(`❌ All ${maxRetries} attempts failed for ${message.action}`);
+    throw lastError || new Error('All retry attempts failed');
+  }
+
+  /**
    * Content Scriptにメッセージを送信してAPIを呼び出す
    */
   private async sendMessage(message: any): Promise<any> {
@@ -112,13 +140,19 @@ class ChatGPTApiClient {
   /**
    * チャット履歴を取得
    */
-  async getConversations(offset: number = 0, limit: number = 28): Promise<ConversationsResponse> {
+  async getConversations(offset: number = 0, limit: number = 28, useRetry: boolean = false): Promise<ConversationsResponse> {
     console.log('📡 Requesting conversations from content script...');
-    return this.sendMessage({
+    const message = {
       action: 'getConversations',
       offset,
       limit,
-    });
+    };
+
+    if (useRetry) {
+      return this.sendMessageWithRetry(message);
+    } else {
+      return this.sendMessage(message);
+    }
   }
 
   /**

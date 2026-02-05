@@ -32,6 +32,30 @@ interface MemoriesResponse {
   memory_num_tokens: number;
 }
 
+// タイムアウト付きfetchのヘルパー関数
+async function fetchWithTimeout(url: string, options: RequestInit, timeoutMs: number = 30000): Promise<Response> {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => {
+    console.warn(`⏱️ Request timeout after ${timeoutMs}ms:`, url);
+    controller.abort();
+  }, timeoutMs);
+
+  try {
+    const response = await fetch(url, {
+      ...options,
+      signal: controller.signal,
+    });
+    clearTimeout(timeoutId);
+    return response;
+  } catch (error) {
+    clearTimeout(timeoutId);
+    if ((error as Error).name === 'AbortError') {
+      throw new Error(`Request timeout after ${timeoutMs}ms`);
+    }
+    throw error;
+  }
+}
+
 // メッセージリスナーを設定
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   console.log('[ContentAPI] 📨 Received message:', message);
@@ -106,18 +130,18 @@ async function getConversations(offset: number = 0, limit: number = 28): Promise
       console.log('[ContentAPI] Using account ID:', cachedAccountId);
     }
 
-    const response = await fetch(url, {
+    const response = await fetchWithTimeout(url, {
       method: 'GET',
       credentials: 'include',
       headers,
-    });
+    }, 30000);
 
     console.log('[ContentAPI] Response status:', response.status);
 
     if (!response.ok) {
       const errorText = await response.text();
       console.error('[ContentAPI] Fetch failed:', errorText);
-      throw new Error(`Failed to fetch conversations: ${response.status}`);
+      throw new Error(`Failed to fetch conversations: ${response.status} - ${errorText.substring(0, 100)}`);
     }
 
     const data = await response.json();
@@ -153,18 +177,18 @@ async function getMemories(): Promise<MemoriesResponse> {
       console.log('[ContentAPI] Using account ID for memories:', cachedAccountId);
     }
 
-    const response = await fetch(url, {
+    const response = await fetchWithTimeout(url, {
       method: 'GET',
       credentials: 'include',
       headers,
-    });
+    }, 30000);
 
     console.log('[ContentAPI] Memories response status:', response.status);
 
     if (!response.ok) {
       const errorText = await response.text();
       console.error('[ContentAPI] Memories fetch failed:', errorText);
-      throw new Error(`Failed to fetch memories: ${response.status}`);
+      throw new Error(`Failed to fetch memories: ${response.status} - ${errorText.substring(0, 100)}`);
     }
 
     const data = await response.json();
@@ -199,19 +223,19 @@ async function deleteConversation(id: string): Promise<void> {
       headers['chatgpt-account-id'] = cachedAccountId;
     }
 
-    const response = await fetch(url, {
+    const response = await fetchWithTimeout(url, {
       method: 'PATCH',
       credentials: 'include',
       headers,
       body: JSON.stringify({ is_visible: false }),
-    });
+    }, 30000);
 
     console.log('[ContentAPI] Response status:', response.status);
 
     if (!response.ok) {
       const errorText = await response.text();
       console.error('[ContentAPI] Delete failed:', errorText);
-      throw new Error(`Failed to delete conversation: ${response.status}`);
+      throw new Error(`Failed to delete conversation: ${response.status} - ${errorText.substring(0, 100)}`);
     }
 
     const result = await response.json();
@@ -249,12 +273,12 @@ async function deleteMemory(id: string): Promise<void> {
 
     // 方法1: POST to /ces/v1/m
     try {
-      const response = await fetch('https://chatgpt.com/ces/v1/m', {
+      const response = await fetchWithTimeout('https://chatgpt.com/ces/v1/m', {
         method: 'POST',
         credentials: 'include',
         headers,
         body: JSON.stringify({ id, action: 'delete' }),
-      });
+      }, 30000);
 
       console.log('[ContentAPI] Method 1 response status:', response.status);
 
@@ -263,22 +287,22 @@ async function deleteMemory(id: string): Promise<void> {
         return;
       }
     } catch (error) {
-      console.warn('[ContentAPI] Method 1 failed, trying method 2');
+      console.warn('[ContentAPI] Method 1 failed, trying method 2:', (error as Error).message);
     }
 
     // 方法2: DELETE request
-    const response = await fetch(`https://chatgpt.com/backend-api/memory/${id}`, {
+    const response = await fetchWithTimeout(`https://chatgpt.com/backend-api/memory/${id}`, {
       method: 'DELETE',
       credentials: 'include',
       headers,
-    });
+    }, 30000);
 
     console.log('[ContentAPI] Method 2 response status:', response.status);
 
     if (!response.ok) {
       const errorText = await response.text();
       console.error('[ContentAPI] Method 2 failed:', errorText);
-      throw new Error(`Failed to delete memory: ${response.status}`);
+      throw new Error(`Failed to delete memory: ${response.status} - ${errorText.substring(0, 100)}`);
     }
 
     console.log('[ContentAPI] ✅ Memory deleted successfully (method 2)');

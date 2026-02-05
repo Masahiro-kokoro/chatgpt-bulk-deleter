@@ -105,9 +105,10 @@ async function loadConversations() {
     
     state.conversations = [];
     const limit = 100; // 28→100に増やしてリクエスト回数を削減
+    const failedPages: { offset: number; error: string }[] = [];
 
-    // 最初のリクエストでtotal件数を取得
-    const firstResponse = await apiClient.getConversations(0, limit);
+    // 最初のリクエストでtotal件数を取得（リトライあり）
+    const firstResponse = await apiClient.getConversations(0, limit, true);
     const total = firstResponse.total;
     console.log('📊 Total conversations:', total);
     
@@ -128,12 +129,25 @@ async function loadConversations() {
       for (let i = 0; i < remainingPages.length; i += batchSize) {
         const batch = remainingPages.slice(i, i + batchSize);
         
-        const responses = await Promise.all(
+        // Promise.allSettled で個別の成功/失敗を扱う
+        const results = await Promise.allSettled(
           batch.map(offset => apiClient.getConversations(offset, limit))
         );
 
-        responses.forEach(response => {
-          state.conversations.push(...response.items);
+        // 結果を処理
+        results.forEach((result, index) => {
+          const offset = batch[index];
+          
+          if (result.status === 'fulfilled') {
+            // 成功: データを追加
+            state.conversations.push(...result.value.items);
+            console.log(`✅ Page at offset ${offset}: ${result.value.items.length} items`);
+          } else {
+            // 失敗: エラーを記録
+            const errorMsg = result.reason?.message || 'Unknown error';
+            console.error(`❌ Page at offset ${offset} failed:`, errorMsg);
+            failedPages.push({ offset, error: errorMsg });
+          }
         });
 
         updateLoadingText(`読み込み中... ${state.conversations.length} / ${total}`);
@@ -141,7 +155,20 @@ async function loadConversations() {
       }
     }
 
-    console.log('✅ All conversations loaded:', state.conversations.length);
+    console.log('✅ Conversations loaded:', state.conversations.length);
+
+    // 失敗したページがある場合は警告を表示
+    if (failedPages.length > 0) {
+      console.warn('⚠️ Some pages failed to load:', failedPages);
+      const failedCount = failedPages.length * limit;
+      alert(
+        `⚠️ 一部のチャット履歴の読み込みに失敗しました。\n\n` +
+        `読み込み成功: ${state.conversations.length}件\n` +
+        `読み込み失敗: 約${failedCount}件\n\n` +
+        `ページをリロードして再度お試しください。`
+      );
+    }
+    
     renderConversations();
   } catch (error) {
     console.error('❌ Failed to load conversations:', error);
