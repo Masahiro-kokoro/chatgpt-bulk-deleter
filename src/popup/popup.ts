@@ -34,6 +34,9 @@ const elements = {
 
 // 初期化
 async function init() {
+  // 選択状態をクリア（前回の状態を引き継がない）
+  selectedIds.clear();
+  
   setupEventListeners();
   await loadData();
 }
@@ -94,79 +97,25 @@ async function loadData() {
   await loadConversations();
 }
 
-// チャット履歴の読み込み（全件取得）
+// チャット履歴の読み込み（最大50件のみ）
 async function loadConversations() {
   state.isLoading = true;
   showLoading(true);
   updateLoadingText('チャット履歴を読み込み中...');
 
   try {
-    console.log('📡 Fetching all conversations...');
+    console.log('📡 Fetching conversations (max 50)...');
     
-    state.conversations = [];
-    const limit = 100; // 28→100に増やしてリクエスト回数を削減
-    const failedPages: { offset: number; error: string }[] = [];
-
-    // 最初のリクエストでtotal件数を取得（リトライあり）
-    const firstResponse = await apiClient.getConversations(0, limit, true);
-    const total = firstResponse.total;
-    console.log('📊 Total conversations:', total);
+    // 最大50件のみ取得
+    const limit = 50;
+    const response = await apiClient.getConversations(0, limit, true);
     
-    state.conversations.push(...firstResponse.items);
-    updateLoadingText(`読み込み中... ${state.conversations.length} / ${total}`);
-
-    // 残りのページを並列で取得
-    if (total > limit) {
-      const remainingPages: number[] = [];
-      for (let offset = limit; offset < total; offset += limit) {
-        remainingPages.push(offset);
-      }
-
-      console.log(`📡 Fetching ${remainingPages.length} additional pages in parallel...`);
-
-      // 並列リクエスト（5ページずつバッチ処理）
-      const batchSize = 5;
-      for (let i = 0; i < remainingPages.length; i += batchSize) {
-        const batch = remainingPages.slice(i, i + batchSize);
-        
-        // Promise.allSettled で個別の成功/失敗を扱う
-        const results = await Promise.allSettled(
-          batch.map(offset => apiClient.getConversations(offset, limit))
-        );
-
-        // 結果を処理
-        results.forEach((result, index) => {
-          const offset = batch[index];
-          
-          if (result.status === 'fulfilled') {
-            // 成功: データを追加
-            state.conversations.push(...result.value.items);
-            console.log(`✅ Page at offset ${offset}: ${result.value.items.length} items`);
-          } else {
-            // 失敗: エラーを記録
-            const errorMsg = result.reason?.message || 'Unknown error';
-            console.error(`❌ Page at offset ${offset} failed:`, errorMsg);
-            failedPages.push({ offset, error: errorMsg });
-          }
-        });
-
-        updateLoadingText(`読み込み中... ${state.conversations.length} / ${total}`);
-        console.log(`📥 Loaded ${state.conversations.length} / ${total} conversations`);
-      }
-    }
-
+    state.conversations = response.items;
     console.log('✅ Conversations loaded:', state.conversations.length);
-
-    // 失敗したページがある場合は警告を表示
-    if (failedPages.length > 0) {
-      console.warn('⚠️ Some pages failed to load:', failedPages);
-      const failedCount = failedPages.length * limit;
-      alert(
-        `⚠️ 一部のチャット履歴の読み込みに失敗しました。\n\n` +
-        `読み込み成功: ${state.conversations.length}件\n` +
-        `読み込み失敗: 約${failedCount}件\n\n` +
-        `ページをリロードして再度お試しください。`
-      );
+    
+    // 50件以上ある場合は通知
+    if (response.total > limit) {
+      console.log(`ℹ️ Total: ${response.total} conversations, showing: ${limit}`);
     }
     
     renderConversations();
@@ -352,6 +301,18 @@ function deselectAll() {
 async function handleDelete() {
   if (selectedIds.size === 0) return;
 
+  // 最大50件チェック
+  const MAX_DELETION = 50;
+  if (selectedIds.size > MAX_DELETION) {
+    alert(
+      `⚠️ 削除上限エラー\n\n` +
+      `一度に削除できるのは${MAX_DELETION}件までです。\n` +
+      `現在${selectedIds.size}件選択されています。\n\n` +
+      `選択を減らしてください。`
+    );
+    return;
+  }
+
   const itemType = state.activeTab === 'chat' ? 'チャット履歴' : 'メモリ';
   const confirmed = confirm(
     `${selectedIds.size}件の${itemType}を削除します。\nこの操作は取り消せません。\n\n本当に削除しますか？`
@@ -365,11 +326,19 @@ async function handleDelete() {
   elements.progress.style.display = 'block';
   elements.deleteBtn.disabled = true;
 
+  // トークンを再取得（期限切れを防ぐ）
+  try {
+    await apiClient.clearTokenCache();
+    console.log('✅ Token cache cleared, will be refreshed on next request');
+  } catch (error) {
+    console.warn('⚠️ Failed to clear token cache:', error);
+  }
+
   const idsToDelete = Array.from(selectedIds);
   const errors: { id: string; error: string }[] = [];
 
-  // バッチ並列削除（10件ずつ同時削除）
-  const batchSize = 10;
+  // バッチ並列削除（5件ずつ同時削除）
+  const batchSize = 5;
   let processedCount = 0;
 
   for (let i = 0; i < idsToDelete.length; i += batchSize) {
@@ -428,6 +397,9 @@ async function handleDelete() {
         console.error(`Failed to delete ${id}:`, errorMsg);
         errors.push({ id, error: errorMsg || 'Unknown error' });
 
+        // 失敗時もselectedIdsから削除（状態の不整合を防ぐ）
+        selectedIds.delete(id);
+
         // 削除中スタイルを解除
         const itemElement = document.querySelector(`[data-id="${id}"]`);
         if (itemElement) {
@@ -448,13 +420,6 @@ async function handleDelete() {
   elements.progress.style.display = 'none';
   elements.deleteBtn.disabled = false;
 
-  // 空の状態をチェック
-  if (state.activeTab === 'chat' && state.conversations.length === 0) {
-    renderConversations();
-  } else if (state.activeTab === 'memory' && state.memories.length === 0) {
-    renderMemories();
-  }
-
   // 結果を表示
   if (errors.length > 0) {
     alert(
@@ -462,6 +427,13 @@ async function handleDelete() {
     );
   } else {
     alert(`${idsToDelete.length}件の${itemType}を削除しました。`);
+  }
+
+  // 最新データを再ロード
+  if (state.activeTab === 'chat') {
+    await loadConversations();
+  } else {
+    await loadMemories();
   }
 
   updateUI();

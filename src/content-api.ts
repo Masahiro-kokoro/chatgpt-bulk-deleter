@@ -95,6 +95,13 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           sendResponse({ success: true });
           break;
 
+        case 'clearTokenCache':
+          console.log('[ContentAPI] 🔄 Clearing token cache...');
+          cachedAuthToken = null;
+          cachedAccountId = null;
+          sendResponse({ success: true });
+          break;
+
         default:
           console.error('[ContentAPI] ❌ Unknown action:', message.action);
           sendResponse({ success: false, error: 'Unknown action' });

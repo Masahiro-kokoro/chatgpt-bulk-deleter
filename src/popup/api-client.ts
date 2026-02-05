@@ -186,6 +186,16 @@ class ChatGPTApiClient {
       id,
     });
   }
+
+  /**
+   * トークンキャッシュをクリア
+   */
+  async clearTokenCache(): Promise<void> {
+    console.log('🔄 Clearing token cache...');
+    await this.sendMessage({
+      action: 'clearTokenCache',
+    });
+  }
 }
 
 export const apiClient = new ChatGPTApiClient();
