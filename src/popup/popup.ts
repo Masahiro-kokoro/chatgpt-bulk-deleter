@@ -94,17 +94,54 @@ async function loadData() {
   await loadConversations();
 }
 
-// チャット履歴の読み込み
+// チャット履歴の読み込み（全件取得）
 async function loadConversations() {
   state.isLoading = true;
   showLoading(true);
+  updateLoadingText('チャット履歴を読み込み中...');
 
   try {
-    console.log('📡 Fetching conversations...');
-    const response = await apiClient.getConversations(0, 28);
-    console.log('✅ Conversations response:', response);
-    console.log('📊 Number of conversations:', response.items?.length || 0);
-    state.conversations = response.items || [];
+    console.log('📡 Fetching all conversations...');
+    
+    state.conversations = [];
+    const limit = 100; // 28→100に増やしてリクエスト回数を削減
+
+    // 最初のリクエストでtotal件数を取得
+    const firstResponse = await apiClient.getConversations(0, limit);
+    const total = firstResponse.total;
+    console.log('📊 Total conversations:', total);
+    
+    state.conversations.push(...firstResponse.items);
+    updateLoadingText(`読み込み中... ${state.conversations.length} / ${total}`);
+
+    // 残りのページを並列で取得
+    if (total > limit) {
+      const remainingPages: number[] = [];
+      for (let offset = limit; offset < total; offset += limit) {
+        remainingPages.push(offset);
+      }
+
+      console.log(`📡 Fetching ${remainingPages.length} additional pages in parallel...`);
+
+      // 並列リクエスト（5ページずつバッチ処理）
+      const batchSize = 5;
+      for (let i = 0; i < remainingPages.length; i += batchSize) {
+        const batch = remainingPages.slice(i, i + batchSize);
+        
+        const responses = await Promise.all(
+          batch.map(offset => apiClient.getConversations(offset, limit))
+        );
+
+        responses.forEach(response => {
+          state.conversations.push(...response.items);
+        });
+
+        updateLoadingText(`読み込み中... ${state.conversations.length} / ${total}`);
+        console.log(`📥 Loaded ${state.conversations.length} / ${total} conversations`);
+      }
+    }
+
+    console.log('✅ All conversations loaded:', state.conversations.length);
     renderConversations();
   } catch (error) {
     console.error('❌ Failed to load conversations:', error);
@@ -119,13 +156,16 @@ async function loadConversations() {
 async function loadMemories() {
   state.isLoading = true;
   showLoading(true);
+  updateLoadingText('メモリを読み込み中...');
 
   try {
+    console.log('📡 Fetching memories...');
     const response = await apiClient.getMemories();
     state.memories = response.memories;
+    console.log('✅ Memories loaded:', state.memories.length);
     renderMemories();
   } catch (error) {
-    console.error('Failed to load memories:', error);
+    console.error('❌ Failed to load memories:', error);
     alert('メモリの読み込みに失敗しました。');
   } finally {
     state.isLoading = false;
@@ -301,49 +341,79 @@ async function handleDelete() {
   const idsToDelete = Array.from(selectedIds);
   const errors: { id: string; error: string }[] = [];
 
-  for (let i = 0; i < idsToDelete.length; i++) {
-    const id = idsToDelete[i];
+  // バッチ並列削除（10件ずつ同時削除）
+  const batchSize = 10;
+  let processedCount = 0;
 
-    try {
-      // アイテムに削除中のスタイルを適用
+  for (let i = 0; i < idsToDelete.length; i += batchSize) {
+    const batch = idsToDelete.slice(i, i + batchSize);
+    
+    // バッチ内のアイテムに削除中スタイルを適用
+    batch.forEach((id) => {
       const itemElement = document.querySelector(`[data-id="${id}"]`);
       if (itemElement) {
         itemElement.classList.add('deleting');
       }
+    });
 
-      // 削除API呼び出し
-      if (state.activeTab === 'chat') {
-        await apiClient.deleteConversation(id);
+    // 並列削除
+    const results = await Promise.allSettled(
+      batch.map(async (id) => {
+        try {
+          // 削除API呼び出し
+          if (state.activeTab === 'chat') {
+            await apiClient.deleteConversation(id);
+          } else {
+            await apiClient.deleteMemory(id);
+          }
+          return { success: true, id };
+        } catch (error) {
+          return { success: false, id, error: (error as Error).message };
+        }
+      })
+    );
+
+    // 結果を処理
+    results.forEach((result, index) => {
+      const id = batch[index];
+      processedCount++;
+
+      if (result.status === 'fulfilled' && result.value.success) {
+        // 成功したらリストから削除
+        if (state.activeTab === 'chat') {
+          state.conversations = state.conversations.filter((c) => c.id !== id);
+        } else {
+          state.memories = state.memories.filter((m) => m.id !== id);
+        }
+
+        selectedIds.delete(id);
+
+        // UIから削除
+        const itemElement = document.querySelector(`[data-id="${id}"]`);
+        if (itemElement) {
+          itemElement.remove();
+        }
       } else {
-        await apiClient.deleteMemory(id);
+        // 失敗
+        const errorMsg = result.status === 'fulfilled' 
+          ? result.value.error 
+          : (result.reason as Error).message;
+        console.error(`Failed to delete ${id}:`, errorMsg);
+        errors.push({ id, error: errorMsg || 'Unknown error' });
+
+        // 削除中スタイルを解除
+        const itemElement = document.querySelector(`[data-id="${id}"]`);
+        if (itemElement) {
+          itemElement.classList.remove('deleting');
+        }
       }
 
-      // 成功したらリストから削除
-      if (state.activeTab === 'chat') {
-        state.conversations = state.conversations.filter((c) => c.id !== id);
-      } else {
-        state.memories = state.memories.filter((m) => m.id !== id);
-      }
+      // 進行状況を更新
+      state.deleteProgress.current = processedCount;
+      elements.progressText.textContent = `${state.deleteProgress.current} / ${state.deleteProgress.total}`;
+    });
 
-      selectedIds.delete(id);
-
-      // UIから削除
-      if (itemElement) {
-        itemElement.remove();
-      }
-
-      // ランダムディレイ（レート制限回避）
-      if (i < idsToDelete.length - 1) {
-        await randomDelay(200, 500);
-      }
-    } catch (error) {
-      console.error(`Failed to delete ${id}:`, error);
-      errors.push({ id, error: (error as Error).message });
-    }
-
-    // 進行状況を更新
-    state.deleteProgress.current = i + 1;
-    elements.progressText.textContent = `${state.deleteProgress.current} / ${state.deleteProgress.total}`;
+    // バッチ間のディレイなし（最速化）
   }
 
   // 完了
@@ -379,6 +449,14 @@ function updateUI() {
 // ローディング表示
 function showLoading(show: boolean) {
   elements.loading.style.display = show ? 'flex' : 'none';
+}
+
+// ローディングテキストを更新
+function updateLoadingText(text: string) {
+  const loadingText = elements.loading.querySelector('p');
+  if (loadingText) {
+    loadingText.textContent = text;
+  }
 }
 
 // ユーティリティ関数

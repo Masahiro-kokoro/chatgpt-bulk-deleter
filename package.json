@@ -1,6 +1,6 @@
 {
   "name": "bulk-chat-memory-deleter",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Bulk delete chat history and memories on chatgpt.com (Unofficial)",
   "type": "module",
   "scripts": {
