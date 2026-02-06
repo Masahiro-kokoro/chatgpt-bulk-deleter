@@ -85,6 +85,61 @@ class ChatGPTApiClient {
   }
 
   /**
+   * Content Scriptが読み込まれているか確認し、必要なら動的注入
+   */
+  private async ensureContentScriptLoaded(tabId: number): Promise<void> {
+    try {
+      // 短いタイムアウトでPing（Content Scriptの存在確認）
+      const response = await Promise.race([
+        new Promise<any>((resolve, reject) => {
+          chrome.tabs.sendMessage(tabId, { action: 'ping' }, (response) => {
+            if (chrome.runtime.lastError) {
+              reject(new Error('Ping failed'));
+            } else {
+              resolve(response);
+            }
+          });
+        }),
+        new Promise((_, reject) => 
+          setTimeout(() => reject(new Error('Ping timeout')), 100)
+        )
+      ]);
+      
+      if (response && response.success) {
+        console.log('✅ Content Script is already loaded');
+        return;
+      }
+    } catch (error) {
+      // Content Scriptが読み込まれていない場合、動的注入
+      console.log('⚠️ Content Script not loaded, injecting...');
+      
+      try {
+        // Content Scriptを動的注入
+        await chrome.scripting.executeScript({
+          target: { tabId },
+          files: ['assets/content-api.ts-D8WDO4BW.js']
+        });
+        
+        // Content Scriptの初期化を待つ
+        await new Promise(resolve => setTimeout(resolve, 500));
+        
+        console.log('✅ Content Script injected successfully');
+      } catch (injectError) {
+        console.error('❌ Failed to inject Content Script:', injectError);
+        throw new Error(
+          '⚠️ Content Scriptの読み込みに失敗しました。\n\n' +
+          '【解決方法】\n' +
+          '1. ChatGPTのページで「F5」キーを押す\n' +
+          '2. もう一度拡張機能を開く\n\n' +
+          'それでも解決しない場合：\n' +
+          '- すべてのChatGPTタブを閉じる\n' +
+          '- 新しいタブでChatGPTを開く'
+        );
+      }
+    }
+  }
+
+  /**
    * タブにメッセージを送信
    */
   private async sendToTab(
@@ -106,16 +161,25 @@ class ChatGPTApiClient {
       await new Promise(r => setTimeout(r, 1000));
     }
 
+    // Content Scriptが読み込まれているか確認（pingアクション以外）
+    if (message.action !== 'ping') {
+      try {
+        await this.ensureContentScriptLoaded(tab.id);
+      } catch (error) {
+        reject(error);
+        return;
+      }
+    }
+
     // Content Scriptにメッセージを送信
     chrome.tabs.sendMessage(tab.id, message, (response) => {
       if (chrome.runtime.lastError) {
         console.error('❌ Chrome runtime error:', chrome.runtime.lastError);
         reject(new Error(
-          'Content Scriptと通信できません。\n\n' +
-          '以下をお試しください：\n' +
-          '1. ChatGPTのページをリロード（F5）\n' +
-          '2. 拡張機能を再読み込み\n' +
-          '3. もう一度ポップアップを開く\n\n' +
+          '⚠️ ChatGPTと通信できません。\n\n' +
+          '【解決方法】\n' +
+          '1. ChatGPTのページで「F5」キーを押す\n' +
+          '2. もう一度拡張機能を開く\n\n' +
           '詳細: ' + chrome.runtime.lastError.message
         ));
         return;
