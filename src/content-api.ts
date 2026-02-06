@@ -278,41 +278,22 @@ async function deleteMemory(id: string): Promise<void> {
       headers['chatgpt-account-id'] = cachedAccountId;
     }
 
-    // 方法1: POST to /ces/v1/m
-    try {
-      const response = await fetchWithTimeout('https://chatgpt.com/ces/v1/m', {
-        method: 'POST',
-        credentials: 'include',
-        headers,
-        body: JSON.stringify({ id, action: 'delete' }),
-      }, 30000);
-
-      console.log('[ContentAPI] Method 1 response status:', response.status);
-
-      if (response.ok) {
-        console.log('[ContentAPI] ✅ Memory deleted successfully (method 1)');
-        return;
-      }
-    } catch (error) {
-      console.warn('[ContentAPI] Method 1 failed, trying method 2:', (error as Error).message);
-    }
-
-    // 方法2: DELETE request
-    const response = await fetchWithTimeout(`https://chatgpt.com/backend-api/memory/${id}`, {
+    // DELETE request to /backend-api/memories/${id}
+    const response = await fetchWithTimeout(`https://chatgpt.com/backend-api/memories/${id}`, {
       method: 'DELETE',
       credentials: 'include',
       headers,
     }, 30000);
 
-    console.log('[ContentAPI] Method 2 response status:', response.status);
+    console.log('[ContentAPI] Response status:', response.status);
 
     if (!response.ok) {
       const errorText = await response.text();
-      console.error('[ContentAPI] Method 2 failed:', errorText);
+      console.error('[ContentAPI] Delete failed:', errorText);
       throw new Error(`Failed to delete memory: ${response.status} - ${errorText.substring(0, 100)}`);
     }
 
-    console.log('[ContentAPI] ✅ Memory deleted successfully (method 2)');
+    console.log('[ContentAPI] ✅ Memory deleted successfully');
   } catch (error) {
     console.error('[ContentAPI] ❌ Delete error:', error);
     throw error;

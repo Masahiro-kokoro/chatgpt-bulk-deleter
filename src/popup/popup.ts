@@ -25,7 +25,6 @@ const elements = {
   memoryList: document.getElementById('memory-list')!,
   loading: document.getElementById('loading')!,
   progress: document.getElementById('progress')!,
-  progressText: document.getElementById('progress-text')!,
   selectAllBtn: document.getElementById('select-all')!,
   deselectAllBtn: document.getElementById('deselect-all')!,
   deleteBtn: document.getElementById('delete-btn')! as HTMLButtonElement,
@@ -458,9 +457,6 @@ async function handleDelete() {
         }
       }
 
-      // 進行状況を更新
-      state.deleteProgress.current = processedCount;
-      elements.progressText.textContent = `${state.deleteProgress.current} / ${state.deleteProgress.total}`;
     });
 
     // バッチ間のディレイなし（最速化）
@@ -474,10 +470,18 @@ async function handleDelete() {
   // 結果を表示
   if (errors.length > 0) {
     alert(
-      `削除完了: ${idsToDelete.length - errors.length}件\n失敗: ${errors.length}件\n\n一部のアイテムの削除に失敗しました。`
+      `削除完了: ${idsToDelete.length - errors.length}件\n` +
+      `失敗: ${errors.length}件\n\n` +
+      `一部のアイテムの削除に失敗しました。\n\n` +
+      `ℹ️ ChatGPTサイドバーに反映するには、\n` +
+      `ページをリロード（F5キー）してください。`
     );
   } else {
-    alert(`${idsToDelete.length}件の${itemType}を削除しました。`);
+    alert(
+      `✅ ${idsToDelete.length}件の${itemType}を削除しました。\n\n` +
+      `ℹ️ ChatGPTサイドバーに反映するには、\n` +
+      `ページをリロード（F5キー）してください。`
+    );
   }
 
   // 最新データを再ロード

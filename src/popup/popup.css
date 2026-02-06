@@ -186,6 +186,27 @@ body {
   text-align: center;
 }
 
+/* ドットアニメーション */
+.dots::after {
+  content: '';
+  animation: dots 1.5s steps(4, end) infinite;
+}
+
+@keyframes dots {
+  0%, 20% {
+    content: '';
+  }
+  40% {
+    content: '.';
+  }
+  60% {
+    content: '..';
+  }
+  80%, 100% {
+    content: '...';
+  }
+}
+
 /* ==================== アクションバー ==================== */
 .action-bar {
   display: flex;
